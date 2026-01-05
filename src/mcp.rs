@@ -58,69 +58,57 @@ fn handle(method: &str, params: Option<Value>, base: &str, token: &str) -> Resul
 
 fn call_tool(name: &str, args: Value, base: &str, token: &str) -> Result<Value, String> {
     match name {
-        "tinymem_ask" => {
-            let sid = args.get("session_id").and_then(|v| v.as_str()).ok_or("missing session_id")?;
-            let q = args.get("question").and_then(|v| v.as_str()).ok_or("missing question")?;
-            let url = format!("{}/session/{}/ask", base, sid);
-            let mut resp = ureq::post(&url)
-                .header("Authorization", &format!("Bearer {}", token))
-                .header("Content-Type", "application/json")
-                .send_json(&json!({"question": q}))
-                .map_err(|e| format!("request failed: {}", e))?;
-            let body: Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
-            let answer = body.get("answer").and_then(|v| v.as_str()).unwrap_or("no answer");
-            Ok(json!({"content": [{"type": "text", "text": answer}]}))
-        }
-        "tinymem_msg" => {
-            let sid = args.get("session_id").and_then(|v| v.as_str()).ok_or("missing session_id")?;
-            let content = args.get("content").and_then(|v| v.as_str()).ok_or("missing content")?;
-            let url = format!("{}/session/{}/msg", base, sid);
-            ureq::post(&url)
-                .header("Authorization", &format!("Bearer {}", token))
-                .header("Content-Type", "application/json")
-                .send_json(&json!({"role": "agent", "content": content}))
-                .map_err(|e| format!("request failed: {}", e))?;
-            Ok(json!({"content": [{"type": "text", "text": "message sent"}]}))
-        }
-        "tinymem_save" => {
-            let sid = args.get("session_id").and_then(|v| v.as_str()).ok_or("missing session_id")?;
-            let key = args.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
-            let content = args.get("content").and_then(|v| v.as_str()).ok_or("missing content")?;
-            let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("insight");
-            let url = format!("{}/memory/{}", base, sid);
-            ureq::post(&url)
-                .header("Authorization", &format!("Bearer {}", token))
-                .header("Content-Type", "application/json")
-                .send_json(&json!({"key": key, "content": content, "kind": kind}))
-                .map_err(|e| format!("request failed: {}", e))?;
-            Ok(json!({"content": [{"type": "text", "text": format!("memory saved: {}", key)}]}))
-        }
         "tinymem_search" => {
             let query = args.get("query").and_then(|v| v.as_str()).ok_or("missing query")?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(25) as usize;
-            let url = format!("{}/memory/search", base);
+            let url = format!("{}/search", base);
             let mut resp = ureq::post(&url)
                 .header("Authorization", &format!("Bearer {}", token))
                 .header("Content-Type", "application/json")
                 .send_json(&json!({"query": query, "limit": limit}))
                 .map_err(|e| format!("request failed: {}", e))?;
             let body: Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
-            let keys = body.get("keys").cloned().unwrap_or(json!([]));
-            Ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&keys).unwrap()}]}))
+            let results = body.get("results").cloned().unwrap_or(json!([]));
+            Ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&results).unwrap()}]}))
         }
         "tinymem_get" => {
-            let key = args.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
-            let url = format!("{}/memory/get/{}", base, key);
+            let id = args.get("id").and_then(|v| v.as_str()).ok_or("missing id")?;
+            let max_chars = args.get("max_chars").and_then(|v| v.as_u64()).unwrap_or(8000) as usize;
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let url = format!("{}/get/{}", base, urlencoding::encode(id));
             let mut resp = ureq::get(&url)
                 .header("Authorization", &format!("Bearer {}", token))
                 .call()
                 .map_err(|e| format!("request failed: {}", e))?;
-            let body: Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
-            if let Some(mem) = body.get("memory") {
-                Ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(mem).unwrap()}]}))
-            } else {
-                Ok(json!({"content": [{"type": "text", "text": "memory not found"}]}))
+            let mut body: Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
+            // Truncate text field for artifacts to avoid context overflow
+            if let Some(text) = body.get("text").and_then(|v| v.as_str()) {
+                let total_len = text.len();
+                let chars: String = text.chars().skip(offset).take(max_chars).collect();
+                let end_offset = offset + chars.len();
+                body["text"] = json!(chars);
+                body["text_range"] = json!({"offset": offset, "end": end_offset, "total": total_len});
+                if end_offset < total_len {
+                    body["has_more"] = json!(true);
+                    body["next_offset"] = json!(end_offset);
+                }
             }
+            Ok(json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&body).unwrap()}]}))
+        }
+        "tinymem_artifact_save" => {
+            let sid = args.get("session_id").and_then(|v| v.as_str()).ok_or("missing session_id")?;
+            let file_path = args.get("file_path").and_then(|v| v.as_str()).ok_or("missing file_path")?;
+            let title = args.get("title").and_then(|v| v.as_str()).ok_or("missing title")?;
+            let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let url = format!("{}/artifact/save/{}", base, sid);
+            let mut resp = ureq::post(&url)
+                .header("Authorization", &format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .send_json(&json!({"file_path": file_path, "title": title, "description": description}))
+                .map_err(|e| format!("request failed: {}", e))?;
+            let body: Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+            Ok(json!({"content": [{"type": "text", "text": format!("artifact saved: {}", id)}]}))
         }
         // Chain tools
         "tinymem_chain_link" => {

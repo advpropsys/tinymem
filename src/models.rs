@@ -13,21 +13,14 @@ pub struct Session {
 #[serde(tag = "type")]
 pub enum Status {
     #[default] Active,
-    Waiting { question: String, asked_at: i64 },
     Done,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hook { pub ts: i64, pub kind: String, pub task: String, #[serde(default)] pub meta: Value }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Msg { pub ts: i64, pub role: String, pub content: String }
-
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionReq { pub agent: String, pub name: Option<String>, #[serde(default)] pub cwd: String }
-
-#[derive(Debug, Deserialize)]
-pub struct AskReq { pub question: String }
 
 #[derive(Debug, Deserialize)]
 pub struct HookReq { pub kind: String, pub task: String, #[serde(default)] pub meta: Value }
@@ -36,22 +29,7 @@ pub struct HookReq { pub kind: String, pub task: String, #[serde(default)] pub m
 pub struct StartReq { pub claude_session_id: String, pub agent: String, #[serde(default)] pub cwd: String }
 
 #[derive(Debug, Clone)]
-pub enum TuiEvent { NewSession, NewQuestion, SessionDone, Refresh }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Memory {
-    pub key: String,
-    pub session_id: String,
-    pub content: String,
-    pub kind: String,  // insight, code, message, pattern
-    pub ts: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MemorySaveReq { pub key: String, pub content: String, #[serde(default)] pub kind: String }
-
-#[derive(Debug, Deserialize)]
-pub struct MemorySearchReq { pub query: String, #[serde(default = "default_limit")] pub limit: usize }
+pub enum TuiEvent { NewSession, SessionDone, Refresh }
 
 fn default_limit() -> usize { 25 }
 
@@ -77,6 +55,42 @@ pub struct ChainSearchReq {
     pub query: String,
     #[serde(default = "default_limit")]
     pub limit: usize,
+}
+
+// Artifact system - file references with metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Artifact {
+    pub id: String,              // unique id: {timestamp}_{sanitized_title}
+    pub file_path: String,       // absolute path to file
+    pub title: String,           // user-provided title
+    pub description: String,     // user-provided description
+    pub session_id: String,      // session that created it
+    pub file_type: String,       // pdf, txt, md, etc.
+    pub ts: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArtifactSaveReq {
+    pub file_path: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GlobalSearchReq {
+    pub query: String,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SearchResult {
+    pub result_type: String,     // "chain_link" or "artifact"
+    pub id: String,              // chain:name:slug or artifact:id
+    pub title: String,           // chain_name/slug or artifact title
+    pub score: f64,
+    pub preview: String,         // first ~200 chars of content
 }
 
 pub fn now() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 }

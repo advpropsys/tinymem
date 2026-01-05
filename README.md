@@ -1,6 +1,6 @@
 # tinymem
 
-Lightweight AI agent coordination server with TUI. Track sessions, handle questions, coordinate multiple agents across machines.
+Lightweight AI agent memory server with TUI. Persist chains (workflow checkpoints) and artifacts (file references with PDF extraction) across sessions, agents, and machines.
 
 ## Quick Start
 
@@ -25,74 +25,111 @@ cargo run -- --token "your-secret-token" --port 3000
 
 ## TUI Controls
 
-| Key       | Action                              |
-|-----------|-------------------------------------|
-| Tab       | Switch tabs (Active/Pending/History)|
-| j/k       | Navigate up/down                    |
-| y         | Answer "yes" to pending question    |
-| n         | Answer "no" to pending question     |
-| e/Enter   | Enter text input mode               |
-| Esc       | Exit input mode                     |
-| r         | Refresh                             |
-| q         | Quit                                |
+| Key       | Action                    |
+|-----------|---------------------------|
+| Tab       | Switch tabs (Chains/Artifacts) |
+| j/k       | Navigate up/down          |
+| d         | Delete selected item      |
+| Enter     | View details              |
+| r         | Refresh                   |
+| q         | Quit                      |
 
-## Claude Code Integration
-
-### Quick Install
+## Installation
 
 ```bash
-# Install hooks to your project
-./install.sh /path/to/your/project
-
-# Set environment (add to ~/.bashrc or ~/.zshrc)
+# Set environment variables first
 export TINYMEM_TOKEN="your-secret-token"
-export TINYMEM_HOST="your-server-ip"  # optional, defaults to localhost
-export TINYMEM_PORT="3000"            # optional, defaults to 3000
+export TINYMEM_PORT="3000"  # optional, defaults to 3000
+
+# Install hooks and MCP config to your project
+./install.sh /path/to/your/project
 ```
 
 The installer will:
-- Create `.claude/hooks/` with tinymem scripts
+- Copy hook scripts to `.claude/hooks/`
 - Merge hooks into existing `settings.json` or create new one
-- Make all scripts executable
+- Build release binary and configure `.mcp.json`
 
 ### Manual Setup
 
-If you prefer manual setup, copy `dot_claude/` contents to your project's `.claude/` directory.
+If you prefer manual setup, add to your project's `.mcp.json`:
 
-### MCP Server (for ask/msg tools)
+```json
+{
+  "mcpServers": {
+    "tinymem": {
+      "command": "/path/to/tinymem/target/release/tinymem",
+      "args": ["--mcp", "--port", "3000", "--token", "your-token"]
+    }
+  }
+}
+```
 
-The install script automatically configures `~/.claude/mcp_servers.json` with the tinymem MCP server.
-
-This gives Claude Code two tools:
-- `tinymem_ask`: Ask user a question (blocks until answered in TUI)
-- `tinymem_msg`: Log a message to the session
-
-## API Reference
-
-All endpoints require `Authorization: Bearer <token>` header.
-
-| Method | Endpoint             | Description                                        |
-|--------|----------------------|----------------------------------------------------|
-| POST   | `/session`           | Create session `{"agent":"...", "cwd":"...", "name":"..."}` |
-| GET    | `/session`           | List active sessions                               |
-| GET    | `/session/:id`       | Get session details                                |
-| POST   | `/session/:id/hook`  | Add hook `{"kind":"pre\|post", "task":"...", "meta":{}}` |
-| POST   | `/session/:id/msg`   | Add message `{"role":"...", "content":"..."}`      |
-| POST   | `/session/:id/ask`   | Ask user (blocks up to 5min) `{"question":"..."}`  |
-| POST   | `/session/:id/summary` | Store summary (body = text)                      |
-| POST   | `/session/:id/done`  | Mark session complete                              |
-
-### Ask User Example
+Set environment variables in your shell:
 
 ```bash
-# From agent - blocks until user answers in TUI
-response=$(curl -s -X POST "http://localhost:3000/session/$TINYMEM_SESSION/ask" \
-  -H "Authorization: Bearer $TINYMEM_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"Should I proceed with the refactoring?"}')
+export TINYMEM_TOKEN="your-secret-token"
+export TINYMEM_SESSION="your-session-id"
+```
 
-answer=$(echo "$response" | jq -r '.answer')
-echo "User said: $answer"
+## Skills (Slash Commands)
+
+Skills provide convenient shortcuts for chain operations in Claude Code:
+
+| Skill | Description |
+|-------|-------------|
+| `/chain-link [name] [slug]` | Save work checkpoint with context, decisions, next steps |
+| `/chain-list [query]` | List all chains or search by name |
+| `/chain-load [name]` | Load chain to restore context from previous work |
+
+Skills are installed automatically to `.claude/skills/` by the installer.
+
+### Proactive Context Loading
+
+When working on related topics, Claude Code can proactively search and suggest relevant chains. Use `/chain-load` anytime during a session, not just at start.
+
+## MCP Tools
+
+### Chains: Workflow Checkpoints
+
+Chains persist context across sessions. Each chain contains multiple links capturing progress.
+
+| Tool | Description |
+|------|-------------|
+| `tinymem_chain_link` | Save checkpoint: chain_name, slug, content |
+| `tinymem_chain_load` | Load chain links by name |
+| `tinymem_chain_list` | List all chains with link counts |
+| `tinymem_chain_search` | Fuzzy search chains by name |
+
+Example usage:
+
+```
+chain_name: "auth-feature"
+slug: "jwt-middleware-complete"
+content: "## Completed\n- JWT validation\n\n## Next\n- Add refresh tokens"
+```
+
+### Artifacts: File References
+
+Artifacts store file references with metadata. PDFs are automatically extracted for text search.
+
+| Tool | Description |
+|------|-------------|
+| `tinymem_artifact_save` | Save artifact: file_path, title, description |
+
+Artifacts are searchable by title, description, and extracted text content.
+
+### Global Search and Retrieval
+
+| Tool | Description |
+|------|-------------|
+| `tinymem_search` | Search across all chains and artifacts |
+| `tinymem_get` | Retrieve content by id (chain:name:slug or artifact:id) |
+
+The `tinymem_get` tool supports pagination for large content:
+
+```
+tinymem_get(id: "artifact:abc123", max_chars: 8000, offset: 0)
 ```
 
 ## Architecture
@@ -100,7 +137,7 @@ echo "User said: $answer"
 ```text
 +------------------------------------------+
 |              TUI (ratatui)               |
-|  Active | Pending | History              |
+|         Chains | Artifacts               |
 +--------------------+---------------------+
                      | mpsc
 +--------------------+---------------------+
@@ -110,9 +147,22 @@ echo "User said: $answer"
                      |
 +--------------------+---------------------+
 |               Redis                      |
-|  sessions, hooks, msgs, pending/answer   |
+|    chains, artifacts, sessions           |
 +------------------------------------------+
 ```
+
+## API Reference
+
+All endpoints require `Authorization: Bearer <token>` header.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/chain/link` | Save chain link |
+| GET | `/chain/:name` | Load chain links |
+| GET | `/chains` | List all chains |
+| POST | `/artifact/save` | Save artifact |
+| GET | `/search?q=...` | Global search |
+| GET | `/get/:id` | Get content by id |
 
 ## License
 

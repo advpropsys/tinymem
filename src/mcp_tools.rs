@@ -4,11 +4,9 @@ use serde_json::{json, Value};
 pub fn tool_list() -> Value {
     json!({
         "tools": [
-            tool_ask(),
-            tool_msg(),
-            tool_save(),
             tool_search(),
             tool_get(),
+            tool_artifact_save(),
             // Chain tools
             tool_chain_link(),
             tool_chain_load(),
@@ -18,108 +16,21 @@ pub fn tool_list() -> Value {
     })
 }
 
-fn tool_ask() -> Value {
-    json!({
-        "name": "tinymem_ask",
-        "description": "Ask a question to the user via tinymem TUI. Blocks until answered.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "Session ID (from TINYMEM_SESSION env)"
-                },
-                "question": {
-                    "type": "string",
-                    "description": "Question to ask the user"
-                }
-            },
-            "required": ["session_id", "question"]
-        }
-    })
-}
-
-fn tool_msg() -> Value {
-    json!({
-        "name": "tinymem_msg",
-        "description": "Send a message/note to the tinymem session log.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "Session ID"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Message content"
-                }
-            },
-            "required": ["session_id", "content"]
-        }
-    })
-}
-
-fn tool_save() -> Value {
-    json!({
-        "name": "tinymem_save",
-        "description": r#"Save a memory to persistent storage for later retrieval.
-
-Use descriptive, searchable keys following this pattern:
-- Lowercase with underscores (e.g. 'auth_jwt_refresh_pattern')
-- 3-6 descriptive words capturing the essence
-- Include domain context (e.g. 'react_', 'postgres_', 'api_')
-
-Examples of good keys:
-- 'auth_jwt_token_refresh_flow'
-- 'react_useeffect_async_cleanup'
-- 'postgres_connection_pool_config'
-- 'error_handling_retry_logic'
-- 'api_rate_limiting_middleware'
-
-The key is used for fuzzy search, so make it descriptive!"#,
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "Session ID"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Descriptive key for fuzzy search (lowercase, underscores, 3-6 words)"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Memory content (insight, code, pattern, etc.)"
-                },
-                "kind": {
-                    "type": "string",
-                    "description": "Type of memory: insight, code, message, pattern",
-                    "enum": ["insight", "code", "message", "pattern"],
-                    "default": "insight"
-                }
-            },
-            "required": ["session_id", "key", "content"]
-        }
-    })
-}
-
 fn tool_search() -> Value {
     json!({
         "name": "tinymem_search",
-        "description": r#"Fuzzy search memories by key. Returns top matching keys sorted by relevance.
+        "description": r#"Global search across all tinymem content - chains and artifacts.
 
-Use this to find relevant memories before retrieving them with tinymem_get.
-The search uses fuzzy matching, so partial matches and typos are tolerated.
+Searches chain links (name, slug, content) and artifacts (title, description, extracted text).
+Returns results sorted by relevance with type, id, title, score, and preview.
 
-Returns: Array of {key, score} objects where score is 0-1 relevance."#,
+Use tinymem_get with the returned id to retrieve full content."#,
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query (fuzzy matched against memory keys)"
+                    "description": "Search query (matched against all content)"
                 },
                 "limit": {
                     "type": "integer",
@@ -135,19 +46,75 @@ Returns: Array of {key, score} objects where score is 0-1 relevance."#,
 fn tool_get() -> Value {
     json!({
         "name": "tinymem_get",
-        "description": r#"Retrieve a memory by exact key.
+        "description": r#"Retrieve content by id from search results.
 
-Use tinymem_search first to find relevant keys, then retrieve with this tool.
-Returns the full memory content including metadata (kind, session_id, timestamp)."#,
+Supports two id formats:
+- chain:name:slug - retrieves specific chain link content
+- artifact:id - retrieves artifact with extracted text (for PDFs) or file content
+
+Use tinymem_search first to find relevant ids."#,
         "inputSchema": {
             "type": "object",
             "properties": {
-                "key": {
+                "id": {
                     "type": "string",
-                    "description": "Exact memory key (from search results)"
+                    "description": "Content id from search results (chain:name:slug or artifact:id)"
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Maximum characters to return for text content (default: 8000). Use for large PDFs to avoid context overflow.",
+                    "default": 8000
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Character offset to start from (default: 0). Use with max_chars to paginate through large content.",
+                    "default": 0
                 }
             },
-            "required": ["key"]
+            "required": ["id"]
+        }
+    })
+}
+
+fn tool_artifact_save() -> Value {
+    json!({
+        "name": "tinymem_artifact_save",
+        "description": r#"Save a file artifact to tinymem for later retrieval and search.
+
+ONLY save artifacts that are genuinely useful for future reference:
+- Research papers, technical docs, specifications
+- Important configs, scripts, data files
+- Reference materials the user explicitly wants to keep
+
+DO NOT save: temporary files, build outputs, logs, or trivial files.
+
+Title and description are critical for fuzzy search - provide meaningful metadata:
+- Title: Descriptive name with key terms (e.g., "Adaptive Test-Time Compute Paper" not "2512.01457v4.pdf")
+- Description: Key topics, authors, purpose - what would you search for to find this?
+
+For PDFs, text is extracted and indexed. For text files, content is indexed directly.
+The file stays on the filesystem - tinymem only stores the reference."#,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID (from TINYMEM_SESSION env)"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Absolute path to the file"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Descriptive title with key search terms (NOT just filename). Example: 'Zero-Overhead Introspection for Adaptive Test-Time Compute' not '2512.01457v4'"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Key topics, authors, purpose - metadata that helps fuzzy search find this artifact later"
+                }
+            },
+            "required": ["session_id", "file_path", "title"]
         }
     })
 }
