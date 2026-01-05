@@ -1,6 +1,14 @@
 # tinymem
 
-Lightweight AI agent memory server with TUI. Persist chains (workflow checkpoints) and artifacts (file references with PDF extraction) across sessions, agents, and machines.
+Lightweight AI agent memory server with TUI. Provides observability and coordination across local and remote agent sessions.
+
+## Features
+
+- **Cross-session persistence**: Chains and artifacts survive compaction, restarts, and context limits
+- **Multi-machine coordination**: Connect agents on different machines to shared Redis backend
+- **Real-time TUI**: Monitor all agent activity from a central dashboard
+- **MCP integration**: Native Claude Code support via MCP protocol
+- **Artifact management**: Store file references with automatic PDF text extraction
 
 ## Quick Start
 
