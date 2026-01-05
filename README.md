@@ -73,12 +73,40 @@ If you prefer manual setup, add to your project's `.mcp.json`:
 }
 ```
 
-Set environment variables in your shell:
+### Running with Claude Code
+
+1. **Build the release binary** on the machine where Claude Code runs:
+
+```bash
+cd /path/to/tinymem
+cargo build --release
+```
+
+2. **Install hooks, skills, and MCP config** to your project:
 
 ```bash
 export TINYMEM_TOKEN="your-secret-token"
-export TINYMEM_SESSION="your-session-id"
+export TINYMEM_PORT="your-port"
+./install.sh /path/to/your/project
 ```
+
+3. **Start the server** anywhere (local or remote machine):
+
+```bash
+./target/release/tinymem --token "your-secret-token" --port 3000
+```
+
+4. **Set environment variables** in the terminal before launching Claude Code:
+
+```bash
+export TINYMEM_TOKEN="your-secret-token"
+export TINYMEM_HOST="your-server-ip"  # localhost if same machine
+export TINYMEM_PORT="3000"
+```
+
+5. **Launch Claude Code** from that terminal - hooks and MCP will connect to your server.
+
+The TUI on the server displays all agent activity in real-time. Multiple Claude Code instances on different machines can connect to the same server for shared observability.
 
 ## Skills (Slash Commands)
 
