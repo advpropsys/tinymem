@@ -1,7 +1,7 @@
 use anyhow::Result;
 use redis::AsyncCommands;
 use strsim::jaro_winkler;
-use crate::models::{ChainLink, Hook, Memory, Msg, Session, Status};
+use crate::models::{Artifact, ChainLink, Hook, SearchResult, Session, Status};
 
 #[derive(Clone)]
 pub struct Store { conn: redis::aio::ConnectionManager }
@@ -87,61 +87,10 @@ impl Store {
         Ok(items.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
     }
 
-    pub async fn add_msg(&self, id: &str, msg: &Msg) -> Result<()> {
-        let mut conn = self.conn.clone();
-        conn.rpush::<_, _, ()>(format!("sessions:{id}:msgs"), serde_json::to_string(msg)?).await?;
-        Ok(())
-    }
-
-    pub async fn get_msgs(&self, id: &str, limit: isize) -> Result<Vec<Msg>> {
-        let mut conn = self.conn.clone();
-        let items: Vec<String> = conn.lrange(format!("sessions:{id}:msgs"), -limit, -1).await?;
-        Ok(items.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
-    }
-
-    pub async fn set_pending(&self, id: &str, q: &str) -> Result<()> {
-        self.conn.clone().set::<_, _, ()>(format!("sessions:{id}:pending"), q).await?; Ok(())
-    }
-
-    pub async fn get_pending(&self, id: &str) -> Result<Option<String>> {
-        Ok(self.conn.clone().get(format!("sessions:{id}:pending")).await?)
-    }
-
-    pub async fn set_answer(&self, id: &str, a: &str) -> Result<()> {
-        self.conn.clone().set::<_, _, ()>(format!("sessions:{id}:answer"), a).await?; Ok(())
-    }
-
-    pub async fn get_answer(&self, id: &str) -> Result<Option<String>> {
-        Ok(self.conn.clone().get(format!("sessions:{id}:answer")).await?)
-    }
-
-    pub async fn clear_pending(&self, id: &str) -> Result<()> {
-        let mut conn = self.conn.clone();
-        redis::pipe().del(format!("sessions:{id}:pending")).del(format!("sessions:{id}:answer"))
-            .query_async::<()>(&mut conn).await?;
-        Ok(())
-    }
-
-    pub async fn set_summary(&self, id: &str, summary: &str) -> Result<()> {
-        self.conn.clone().set::<_, _, ()>(format!("sessions:{id}:summary"), summary).await?; Ok(())
-    }
-
-    pub async fn get_summary(&self, id: &str) -> Result<Option<String>> {
-        Ok(self.conn.clone().get(format!("sessions:{id}:summary")).await?)
-    }
-
     pub async fn list_active(&self) -> Result<Vec<String>> { Ok(self.conn.clone().smembers("active").await?) }
 
     pub async fn list_history(&self, limit: isize) -> Result<Vec<String>> {
         Ok(self.conn.clone().lrange("history", 0, limit - 1).await?)
-    }
-
-    pub async fn list_waiting(&self) -> Result<Vec<(String, String)>> {
-        let mut waiting = Vec::new();
-        for id in self.list_active().await? {
-            if let Ok(Some(q)) = self.get_pending(&id).await { waiting.push((id, q)); }
-        }
-        Ok(waiting)
     }
 
     pub async fn set_active_tool(&self, id: &str, tool: &str) -> Result<()> {
@@ -166,34 +115,6 @@ impl Store {
 
     pub async fn get_claude_mapping(&self, claude_id: &str) -> Result<Option<String>> {
         Ok(self.conn.clone().get(format!("claude:{claude_id}")).await?)
-    }
-
-    // Memory operations
-    pub async fn save_memory(&self, mem: &Memory) -> Result<()> {
-        let mut conn = self.conn.clone();
-        redis::pipe()
-            .set(format!("memories:{}", mem.key), serde_json::to_string(mem)?)
-            .sadd("memory_keys", &mem.key)
-            .query_async::<()>(&mut conn).await?;
-        Ok(())
-    }
-
-    pub async fn get_memory(&self, key: &str) -> Result<Option<Memory>> {
-        let json: Option<String> = self.conn.clone().get(format!("memories:{key}")).await?;
-        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
-    }
-
-    pub async fn list_memory_keys(&self) -> Result<Vec<String>> {
-        Ok(self.conn.clone().smembers("memory_keys").await?)
-    }
-
-    pub async fn delete_memory(&self, key: &str) -> Result<()> {
-        let mut conn = self.conn.clone();
-        redis::pipe()
-            .del(format!("memories:{key}"))
-            .srem("memory_keys", key)
-            .query_async::<()>(&mut conn).await?;
-        Ok(())
     }
 
     // Chain operations - multi-session workflow chains
@@ -260,17 +181,128 @@ impl Store {
         Ok(())
     }
 
-    pub async fn get_chain_links_by_session(&self, session_id: &str) -> Result<Vec<ChainLink>> {
-        // Get all chain names, then filter links by session_id
-        let mut all_links = Vec::new();
-        for name in self.list_chain_names().await? {
-            for link in self.get_chain_links(&name).await? {
-                if link.session_id == session_id {
-                    all_links.push(link);
+    // Get specific chain link by chain_name and slug or timestamp
+    pub async fn get_chain_link(&self, chain_name: &str, identifier: &str) -> Result<Option<ChainLink>> {
+        let links = self.get_chain_links(chain_name).await?;
+        // Try matching by slug first, then by timestamp
+        Ok(links.into_iter().find(|l| l.slug == identifier || l.ts.to_string() == identifier))
+    }
+
+    // Artifact operations
+    pub async fn save_artifact(&self, artifact: &Artifact) -> Result<()> {
+        let mut conn = self.conn.clone();
+        redis::pipe()
+            .set(format!("artifacts:{}", artifact.id), serde_json::to_string(artifact)?)
+            .sadd("artifact_ids", &artifact.id)
+            .query_async::<()>(&mut conn).await?;
+        Ok(())
+    }
+
+    pub async fn get_artifact(&self, id: &str) -> Result<Option<Artifact>> {
+        let json: Option<String> = self.conn.clone().get(format!("artifacts:{id}")).await?;
+        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+    }
+
+    pub async fn list_artifacts(&self) -> Result<Vec<Artifact>> {
+        let mut conn = self.conn.clone();
+        let ids: Vec<String> = conn.smembers("artifact_ids").await?;
+        let mut artifacts = Vec::new();
+        for id in ids {
+            if let Ok(Some(json)) = conn.get::<_, Option<String>>(format!("artifacts:{id}")).await {
+                if let Ok(artifact) = serde_json::from_str::<Artifact>(&json) {
+                    artifacts.push(artifact);
                 }
             }
         }
-        all_links.sort_by(|a, b| b.ts.cmp(&a.ts));
-        Ok(all_links)
+        artifacts.sort_by(|a, b| b.ts.cmp(&a.ts));
+        Ok(artifacts)
+    }
+
+    pub async fn delete_artifact(&self, id: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        redis::pipe()
+            .del(format!("artifacts:{id}"))
+            .srem("artifact_ids", id)
+            // Also delete cached text extraction if exists
+            .del(format!("artifacts:{id}:text"))
+            .query_async::<()>(&mut conn).await?;
+        Ok(())
+    }
+
+    // Cache extracted text for artifact (for search)
+    pub async fn set_artifact_text(&self, id: &str, text: &str) -> Result<()> {
+        self.conn.clone().set::<_, _, ()>(format!("artifacts:{id}:text"), text).await?;
+        Ok(())
+    }
+
+    pub async fn get_artifact_text(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.conn.clone().get(format!("artifacts:{id}:text")).await?)
+    }
+
+    // Global search across chains and artifacts
+    pub async fn global_search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let query_lower = query.to_lowercase();
+        let mut results = Vec::new();
+
+        // Search chain links
+        for chain_name in self.list_chain_names().await? {
+            for link in self.get_chain_links(&chain_name).await? {
+                let searchable = format!("{} {} {}", chain_name, link.slug, link.content).to_lowercase();
+                let score = self.compute_search_score(&searchable, &query_lower);
+                if score > 0.3 {
+                    let preview = link.content.chars().take(200).collect::<String>();
+                    results.push(SearchResult {
+                        result_type: "chain_link".to_string(),
+                        id: format!("chain:{}:{}", chain_name, link.slug),
+                        title: format!("{}/{}", chain_name, link.slug),
+                        score,
+                        preview,
+                    });
+                }
+            }
+        }
+
+        // Search artifacts
+        for artifact in self.list_artifacts().await? {
+            let cached_text = self.get_artifact_text(&artifact.id).await?.unwrap_or_default();
+            let searchable = format!("{} {} {}", artifact.title, artifact.description, cached_text).to_lowercase();
+            let score = self.compute_search_score(&searchable, &query_lower);
+            if score > 0.3 {
+                let preview = if !cached_text.is_empty() {
+                    cached_text.chars().take(200).collect()
+                } else {
+                    artifact.description.chars().take(200).collect()
+                };
+                results.push(SearchResult {
+                    result_type: "artifact".to_string(),
+                    id: format!("artifact:{}", artifact.id),
+                    title: artifact.title.clone(),
+                    score,
+                    preview,
+                });
+            }
+        }
+
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    fn compute_search_score(&self, text: &str, query: &str) -> f64 {
+        // Simple scoring: substring match gets high score, jaro-winkler for fuzzy
+        if text.contains(query) {
+            0.9 + (query.len() as f64 / text.len() as f64).min(0.1)
+        } else {
+            // Check individual words
+            let words: Vec<&str> = query.split_whitespace().collect();
+            let matches = words.iter().filter(|w| text.contains(*w)).count();
+            if matches > 0 {
+                0.5 + (matches as f64 / words.len() as f64) * 0.4
+            } else {
+                // Fall back to jaro-winkler on title-like portion
+                let first_100: String = text.chars().take(100).collect();
+                jaro_winkler(&first_100, query) * 0.5
+            }
+        }
     }
 }

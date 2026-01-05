@@ -1,3 +1,7 @@
 /target
 *.log
 .env
+.mcp.json
+.claude
+.serena
+CLAUDE.md
