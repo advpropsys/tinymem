@@ -18,5 +18,5 @@ futures = "0.3"
 ureq = { version = "3.1.4", features = ["json"] }
 strsim = "0.11"
 chrono = "0.4"
-pdf_oxide = "0.1"
 urlencoding = "2"
+mupdf = { git = "https://github.com/messense/mupdf-rs.git", version = "0.6.0" }

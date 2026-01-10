@@ -237,14 +237,24 @@ async fn delete_artifact(State(s): State<AppState>, Path(id): Path<String>) -> i
 fn extract_file_text(file_path: &str, file_type: &str) -> String {
     match file_type {
         "pdf" => {
-            match pdf_oxide::PdfDocument::open(file_path) {
-                Ok(mut doc) => {
+            match mupdf::Document::open(file_path) {
+                Ok(doc) => {
                     let mut text = String::new();
                     let page_count = doc.page_count().unwrap_or(0);
                     for i in 0..page_count {
-                        if let Ok(page_text) = doc.extract_text(i) {
-                            text.push_str(&page_text);
-                            text.push('\n');
+                        if let Ok(page) = doc.load_page(i) {
+                            if let Ok(tp) = page.to_text_page(mupdf::TextPageFlags::empty()) {
+                                for block in tp.blocks() {
+                                    for line in block.lines() {
+                                        for ch in line.chars() {
+                                            if let Some(c) = ch.char() {
+                                                text.push(c);
+                                            }
+                                        }
+                                        text.push('\n');
+                                    }
+                                }
+                            }
                         }
                         if text.len() > 50000 { break; }
                     }
